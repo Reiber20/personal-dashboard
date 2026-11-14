@@ -3,7 +3,6 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   fetchUserProfile,
   getOAuthCredentials,
-  getSessionCookieOptions,
   normalizeSession,
   parseCookieJson,
   serializeCookieJson,
@@ -89,26 +88,29 @@ export async function GET(req: NextRequest) {
       access_token: tokens.access_token,
       refresh_token: refreshToken,
       expiry_date: expiryDate,
-      ...(user ? { user } : {}),
-    };
+      ...(user ? { name: user.name, email: user.email } : {}),
+    } as StoredYouTubeSession;
 
     const encodedSession = serializeCookieJson(sessionPayload);
-    const cookieOptions = getSessionCookieOptions();
 
     const successPath =
       state === "hoy" ? "/?yt_sync=1&cal_sync=1" : "/?tab=youtube&yt_sync=1";
     const response = NextResponse.redirect(new URL(successPath, req.url), {
-      status: 307,
+      status: 302,
     });
+
     response.headers.set(
       "Cache-Control",
       "no-store, no-cache, must-revalidate"
     );
 
-    try {
-      cookieStore.set(YT_SESSION_COOKIE, encodedSession, cookieOptions);
-    } catch {}
-    response.cookies.set(YT_SESSION_COOKIE, encodedSession, cookieOptions);
+    response.cookies.set(YT_SESSION_COOKIE, encodedSession, {
+      httpOnly: true,
+      secure: url.protocol === "https:",
+      sameSite: "lax",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 30,
+    });
 
     return response;
   } catch {
