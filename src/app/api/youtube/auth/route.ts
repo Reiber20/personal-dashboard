@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
   );
   authUrl.searchParams.set("access_type", "offline");
   authUrl.searchParams.set("prompt", "consent");
-  authUrl.searchParams.set("include_granted_scopes", "true");
+  authUrl.searchParams.set("include_granted_scopes", "false");
   authUrl.searchParams.set("state", returnTo);
 
   return NextResponse.redirect(authUrl.toString());
