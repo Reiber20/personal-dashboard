@@ -362,7 +362,11 @@ export async function POST(req: NextRequest) {
     const googlePromise =
       authenticated && updatedSession?.access_token
         ? fetchGoogleCalendarEvents(updatedSession.access_token, timeMinIso, timeMaxIso)
-        : Promise.resolve({ events: [] as CalendarEvent[], scopeGranted: false });
+        : Promise.resolve({
+            events: [] as CalendarEvent[],
+            scopeGranted: false,
+            debugError: undefined as string | undefined,
+          });
 
     const icsUrls = Array.isArray(body.icsUrls)
       ? body.icsUrls
