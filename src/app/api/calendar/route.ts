@@ -2,9 +2,11 @@ import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import {
   getOAuthCredentials,
-  ONE_YEAR_SECONDS,
+  getSessionCookieOptions,
+  normalizeSession,
   parseCookieJson,
   refreshAccessToken,
+  serializeCookieJson,
   StoredOAuthConfig,
   StoredYouTubeSession,
   YT_OAUTH_CFG_COOKIE,
@@ -191,37 +193,44 @@ async function fetchGoogleCalendarEvents(
 }
 
 async function resolveSessionWithRefresh(
-  session: StoredYouTubeSession | null,
+  rawSession: StoredYouTubeSession | null,
   creds: StoredOAuthConfig | null
 ): Promise<{
   authenticated: boolean;
   updatedSession: StoredYouTubeSession | null;
   sessionChanged: boolean;
 }> {
-  if (!session) {
+  const normalized = normalizeSession(rawSession);
+  if (!normalized) {
     return { authenticated: false, updatedSession: null, sessionChanged: false };
   }
 
-  let current = { ...session };
+  let current = { ...normalized };
   let sessionChanged = false;
 
-  if (Date.now() > current.expiresAt - 60_000 && current.refreshToken && creds) {
+  if (
+    Date.now() > current.expiry_date - 60_000 &&
+    current.refresh_token &&
+    creds
+  ) {
     const refreshed = await refreshAccessToken(
-      current.refreshToken,
+      current.refresh_token,
       creds.clientId,
       creds.clientSecret
     );
     if (refreshed) {
       current = {
         ...current,
-        accessToken: refreshed.accessToken,
-        expiresAt: refreshed.expiresAt,
+        access_token: refreshed.accessToken,
+        expiry_date: refreshed.expiresAt,
       };
       sessionChanged = true;
     }
   }
 
-  const valid = Boolean(current.refreshToken) || Date.now() < current.expiresAt;
+  const valid =
+    Boolean(current.refresh_token) ||
+    (Boolean(current.access_token) && Date.now() < current.expiry_date);
   return {
     authenticated: valid,
     updatedSession: valid ? current : null,
@@ -257,7 +266,7 @@ export async function POST(req: NextRequest) {
       await resolveSessionWithRefresh(sessionCookie, creds);
 
     if (body.action === "create_google_event") {
-      if (!authenticated || !updatedSession?.accessToken || !body.event?.title) {
+      if (!authenticated || !updatedSession?.access_token || !body.event?.title) {
         return NextResponse.json(
           { ok: false, error: "Se requiere sesión de Google Calendar activa." },
           { status: 401 }
@@ -287,7 +296,7 @@ export async function POST(req: NextRequest) {
         {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${updatedSession.accessToken}`,
+            Authorization: `Bearer ${updatedSession.access_token}`,
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
@@ -327,13 +336,11 @@ export async function POST(req: NextRequest) {
 
       const res = NextResponse.json({ ok: true, createdEvent });
       if (sessionChanged && updatedSession) {
-        res.cookies.set(YT_SESSION_COOKIE, JSON.stringify(updatedSession), {
-          httpOnly: true,
-          sameSite: "lax",
-          secure: process.env.NODE_ENV === "production",
-          path: "/",
-          maxAge: ONE_YEAR_SECONDS,
-        });
+        res.cookies.set(
+          YT_SESSION_COOKIE,
+          serializeCookieJson(updatedSession),
+          getSessionCookieOptions()
+        );
       }
       return res;
     }
@@ -351,8 +358,8 @@ export async function POST(req: NextRequest) {
     const timeMaxMs = new Date(timeMaxIso).getTime();
 
     const googlePromise =
-      authenticated && updatedSession?.accessToken
-        ? fetchGoogleCalendarEvents(updatedSession.accessToken, timeMinIso, timeMaxIso)
+      authenticated && updatedSession?.access_token
+        ? fetchGoogleCalendarEvents(updatedSession.access_token, timeMinIso, timeMaxIso)
         : Promise.resolve({ events: [] as CalendarEvent[], scopeGranted: false });
 
     const icsUrls = Array.isArray(body.icsUrls)
@@ -404,13 +411,11 @@ export async function POST(req: NextRequest) {
     );
 
     if (sessionChanged && updatedSession) {
-      res.cookies.set(YT_SESSION_COOKIE, JSON.stringify(updatedSession), {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
-        path: "/",
-        maxAge: ONE_YEAR_SECONDS,
-      });
+      res.cookies.set(
+        YT_SESSION_COOKIE,
+        serializeCookieJson(updatedSession),
+        getSessionCookieOptions()
+      );
     }
 
     return res;
