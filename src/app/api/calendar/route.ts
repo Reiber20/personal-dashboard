@@ -133,7 +133,7 @@ async function fetchGoogleCalendarEvents(
   accessToken: string,
   timeMinIso: string,
   timeMaxIso: string
-): Promise<{ events: CalendarEvent[]; scopeGranted: boolean }> {
+): Promise<{ events: CalendarEvent[]; scopeGranted: boolean; debugError?: string }> {
   try {
     const apiUrl = new URL(
       "https://www.googleapis.com/calendar/v3/calendars/primary/events"
@@ -151,10 +151,12 @@ async function fetchGoogleCalendarEvents(
     });
 
     if (res.status === 401 || res.status === 403) {
-      return { events: [], scopeGranted: false };
+      const errBody = await res.text();
+      return { events: [], scopeGranted: false, debugError: `HTTP ${res.status}: ${errBody}` };
     }
     if (!res.ok) {
-      return { events: [], scopeGranted: true };
+      const errBody = await res.text();
+      return { events: [], scopeGranted: true, debugError: `HTTP ${res.status}: ${errBody}` };
     }
 
     const data = (await res.json()) as {
@@ -399,11 +401,12 @@ export async function POST(req: NextRequest) {
       })
       .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
 
-    const res = NextResponse.json(
+      const res = NextResponse.json(
       {
         authenticated,
         hasOAuthConfig: Boolean(creds),
         calendarScopeGranted: googleResult.scopeGranted,
+        debugError: googleResult.debugError || null,
         user: updatedSession?.user || null,
         events,
       },
