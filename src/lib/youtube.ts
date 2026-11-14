@@ -446,5 +446,5 @@ export async function fetchSubscriptionsFeed(
     unique.push(video);
   }
 
-  return unique.slice(0, 60);
+  return unique.slice(0, 200);
 }
