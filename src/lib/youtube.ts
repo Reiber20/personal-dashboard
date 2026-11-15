@@ -9,6 +9,8 @@ export interface StoredYouTubeSession {
   access_token: string;
   refresh_token: string;
   expiry_date: number;
+  name?: string;
+  email?: string;
   user?: YouTubeUserProfile;
   // Optional legacy aliases for backward compatibility
   accessToken?: string;
@@ -117,11 +119,25 @@ export function normalizeSession(
         ? raw.expiresAt
         : 0;
   if (!access_token && !refresh_token) return null;
+
+  const email = raw.user?.email || raw.email;
+  const name = raw.user?.name || raw.name;
+  const user: YouTubeUserProfile | undefined =
+    raw.user || email || name
+      ? {
+          name: name || email || "Usuario de Google",
+          ...(email ? { email } : {}),
+          ...(raw.user?.picture ? { picture: raw.user.picture } : {}),
+        }
+      : undefined;
+
   return {
     access_token,
     refresh_token,
     expiry_date,
-    ...(raw.user ? { user: raw.user } : {}),
+    ...(email ? { email } : {}),
+    ...(name ? { name } : {}),
+    ...(user ? { user } : {}),
   };
 }
 

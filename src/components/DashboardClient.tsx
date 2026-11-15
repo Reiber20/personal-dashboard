@@ -429,6 +429,8 @@ export function DashboardClient() {
           youtube: prev.youtube + (youtubeChanged ? 1 : 0),
         }));
       }
+
+      window.dispatchEvent(new CustomEvent("hr-cloud-sync-applied"));
     },
     []
   );
@@ -534,8 +536,19 @@ export function DashboardClient() {
           Object.keys(cloudData).length > 0;
 
         if (hasCloudData) {
-          applyCloudSyncData(cloudData as Record<string, unknown>);
-          setSyncStatus("synced");
+          const cloudRecord = cloudData as Record<string, unknown>;
+          applyCloudSyncData(cloudRecord);
+          const hasCloudProjects =
+            Array.isArray(cloudRecord.projects) ||
+            Array.isArray(cloudRecord[STORAGE_KEYS.projects]);
+          const localProjects = readJsonFromStorage<unknown[]>(
+            STORAGE_KEYS.projects
+          );
+          if (!hasCloudProjects && Array.isArray(localProjects)) {
+            await pushToCloudNow();
+          } else {
+            setSyncStatus("synced");
+          }
         } else {
           const localPayload = collectLocalSyncPayload();
           if (hasMeaningfulLocalData(localPayload)) {
@@ -594,11 +607,19 @@ export function DashboardClient() {
     };
   }, [hydrated, syncFromCloud, pushToCloudNow]);
 
-  // 2) Watch localStorage updates from DashboardClient & all child widgets (800ms debounce)
+  // 2) Watch localStorage & widget sync events from DashboardClient & all child widgets (800ms debounce)
   useEffect(() => {
     let proto: Storage | null = null;
     let originalSetItem: Storage["setItem"] | null = null;
     let originalRemoveItem: Storage["removeItem"] | null = null;
+
+    const handleLocalSyncEvent = () => {
+      if (!isApplyingCloudRef.current) {
+        scheduleCloudPush();
+      }
+    };
+
+    window.addEventListener("hr-local-sync", handleLocalSyncEvent);
 
     try {
       proto = Storage.prototype;
@@ -642,6 +663,7 @@ export function DashboardClient() {
     }
 
     return () => {
+      window.removeEventListener("hr-local-sync", handleLocalSyncEvent);
       try {
         if (proto && originalSetItem) proto.setItem = originalSetItem;
         if (proto && originalRemoveItem) proto.removeItem = originalRemoveItem;

@@ -109,26 +109,50 @@ export function PersonalProjectsWidget() {
   const [editDesc, setEditDesc] = useState("");
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(PROJECTS_STORAGE_KEY);
-      if (raw !== null) {
-        const parsed = JSON.parse(raw) as PersonalProject[];
-        if (Array.isArray(parsed)) {
-          setProjects(parsed);
-          return;
+    const loadFromStorage = () => {
+      try {
+        const raw = localStorage.getItem(PROJECTS_STORAGE_KEY);
+        if (raw !== null) {
+          const parsed = JSON.parse(raw) as PersonalProject[];
+          if (Array.isArray(parsed)) {
+            setProjects(parsed);
+            return;
+          }
         }
+        setProjects(STARTER_PROJECTS);
+      } catch {
+        setProjects(STARTER_PROJECTS);
       }
-      setProjects(STARTER_PROJECTS);
-      localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(STARTER_PROJECTS));
-    } catch {
-      setProjects(STARTER_PROJECTS);
-    }
+    };
+
+    loadFromStorage();
+
+    const handleCloudApplied = () => {
+      loadFromStorage();
+    };
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === PROJECTS_STORAGE_KEY) {
+        loadFromStorage();
+      }
+    };
+
+    window.addEventListener("hr-cloud-sync-applied", handleCloudApplied);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener("hr-cloud-sync-applied", handleCloudApplied);
+      window.removeEventListener("storage", handleStorage);
+    };
   }, []);
 
   const persist = (next: PersonalProject[]) => {
     setProjects(next);
     try {
       localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(next));
+      window.dispatchEvent(
+        new CustomEvent("hr-local-sync", {
+          detail: { key: PROJECTS_STORAGE_KEY, value: next },
+        })
+      );
     } catch {}
   };
 

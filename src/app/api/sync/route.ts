@@ -1,9 +1,14 @@
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import {
+  fetchUserProfile,
+  getOAuthCredentials,
   normalizeSession,
   parseCookieJson,
+  refreshAccessToken,
+  StoredOAuthConfig,
   StoredYouTubeSession,
+  YT_OAUTH_CFG_COOKIE,
   YT_SESSION_COOKIE,
 } from "@/lib/youtube";
 
@@ -23,10 +28,38 @@ async function getAuthenticatedEmail(): Promise<string | null> {
     cookieStore.get(YT_SESSION_COOKIE)?.value
   );
   const session = normalizeSession(raw);
-  const email = (session as { email?: string; user?: { email?: string } } | null)
-    ?.user?.email ||
-    (session as { email?: string } | null)?.email;
-  return email ? email.trim().toLowerCase() : null;
+  const cookieEmail =
+    session?.user?.email ||
+    session?.email ||
+    raw?.user?.email ||
+    raw?.email;
+  if (cookieEmail) {
+    return cookieEmail.trim().toLowerCase();
+  }
+
+  if (!session) return null;
+
+  let token = session.access_token;
+  if ((!token || Date.now() >= session.expiry_date - 60_000) && session.refresh_token) {
+    const cfgCookie = parseCookieJson<StoredOAuthConfig>(
+      cookieStore.get(YT_OAUTH_CFG_COOKIE)?.value
+    );
+    const creds = getOAuthCredentials(cfgCookie);
+    if (creds) {
+      const refreshed = await refreshAccessToken(
+        session.refresh_token,
+        creds.clientId,
+        creds.clientSecret
+      );
+      if (refreshed?.accessToken) {
+        token = refreshed.accessToken;
+      }
+    }
+  }
+
+  if (!token) return null;
+  const profile = await fetchUserProfile(token);
+  return profile?.email ? profile.email.trim().toLowerCase() : null;
 }
 
 export async function GET() {

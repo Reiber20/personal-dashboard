@@ -21,14 +21,14 @@ export function TrendStrip({ trends, loading }: TrendStripProps) {
 
   if (loading) {
     return (
-      <section className="mb-5">
+      <section className="mb-5 min-w-0 max-w-full">
         <div className="mb-2.5 flex items-center gap-2">
           <Flame className="h-4 w-4 text-orange-500" />
           <h2 className="text-sm font-bold tracking-tight uppercase text-slate-700 dark:text-slate-300">
             Trending Topics Hoy · Google & X
           </h2>
         </div>
-        <div className="flex gap-2.5 overflow-x-auto pb-1 no-scrollbar">
+        <div className="custom-scrollbar flex w-full max-w-full gap-2.5 overflow-x-auto pt-0.5 pb-2.5 scroll-smooth">
           {Array.from({ length: 6 }).map((_, i) => (
             <div
               key={i}
@@ -43,7 +43,7 @@ export function TrendStrip({ trends, loading }: TrendStripProps) {
   if (trends.length === 0) return null;
 
   return (
-    <section className="mb-5">
+    <section className="mb-5 min-w-0 max-w-full">
       <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Flame className="h-4 w-4 text-orange-500" />
@@ -78,7 +78,7 @@ export function TrendStrip({ trends, loading }: TrendStripProps) {
         </div>
       </div>
 
-      <div className="flex gap-2.5 overflow-x-auto pb-2 no-scrollbar">
+      <div className="custom-scrollbar flex w-full max-w-full gap-2.5 overflow-x-auto pt-0.5 pb-2.5 scroll-smooth">
         {filteredTrends.map((trend, index) => {
           const isSelected = selectedTrend?.id === trend.id;
           const isX = trend.source === "x";
