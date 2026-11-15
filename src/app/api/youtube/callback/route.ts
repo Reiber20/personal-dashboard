@@ -2,10 +2,10 @@ import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import {
   fetchUserProfile,
-  fetchUserSubscriptions,
   getOAuthCredentials,
-  ONE_YEAR_SECONDS,
+  normalizeSession,
   parseCookieJson,
+  serializeCookieJson,
   StoredOAuthConfig,
   StoredYouTubeSession,
   YT_OAUTH_CFG_COOKIE,
@@ -31,8 +31,10 @@ export async function GET(req: NextRequest) {
   const cfgCookie = parseCookieJson<StoredOAuthConfig>(
     cookieStore.get(YT_OAUTH_CFG_COOKIE)?.value
   );
-  const existingSession = parseCookieJson<StoredYouTubeSession>(
-    cookieStore.get(YT_SESSION_COOKIE)?.value
+  const existingSession = normalizeSession(
+    parseCookieJson<StoredYouTubeSession>(
+      cookieStore.get(YT_SESSION_COOKIE)?.value
+    )
   );
   const creds = getOAuthCredentials(cfgCookie);
 
@@ -61,7 +63,7 @@ export async function GET(req: NextRequest) {
 
     if (!tokenRes.ok) {
       return NextResponse.redirect(
-        new URL("/?tab=youtube&yt_error=token_exchange_failed", req.url)
+        new URL(`${errorBase}yt_error=token_exchange_failed`, req.url)
       );
     }
 
@@ -73,42 +75,47 @@ export async function GET(req: NextRequest) {
 
     if (!tokens.access_token) {
       return NextResponse.redirect(
-        new URL("/?tab=youtube&yt_error=missing_access_token", req.url)
+        new URL(`${errorBase}yt_error=missing_access_token`, req.url)
       );
     }
 
     const refreshToken =
-      tokens.refresh_token || existingSession?.refreshToken || "";
-
-    const [user, syncedChannels] = await Promise.all([
-      fetchUserProfile(tokens.access_token),
-      fetchUserSubscriptions(tokens.access_token),
-    ]);
+      tokens.refresh_token || existingSession?.refresh_token || "";
+    const expiryDate = Date.now() + (tokens.expires_in ?? 3500) * 1000;
+    const user = await fetchUserProfile(tokens.access_token);
 
     const sessionPayload: StoredYouTubeSession = {
-      refreshToken,
-      accessToken: tokens.access_token,
-      expiresAt: Date.now() + (tokens.expires_in ?? 3500) * 1000,
-      user,
-      syncedChannels,
-    };
+      access_token: tokens.access_token,
+      refresh_token: refreshToken,
+      expiry_date: expiryDate,
+      ...(user ? { name: user.name, email: user.email } : {}),
+    } as StoredYouTubeSession;
+
+    const encodedSession = serializeCookieJson(sessionPayload);
 
     const successPath =
       state === "hoy" ? "/?yt_sync=1&cal_sync=1" : "/?tab=youtube&yt_sync=1";
-    const response = NextResponse.redirect(new URL(successPath, req.url));
+    const response = NextResponse.redirect(new URL(successPath, req.url), {
+      status: 302,
+    });
 
-    response.cookies.set(YT_SESSION_COOKIE, JSON.stringify(sessionPayload), {
+    response.headers.set(
+      "Cache-Control",
+      "no-store, no-cache, must-revalidate"
+    );
+
+    response.cookies.set(YT_SESSION_COOKIE, encodedSession, {
       httpOnly: true,
+      secure: url.protocol === "https:",
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
       path: "/",
-      maxAge: ONE_YEAR_SECONDS,
+      maxAge: 60 * 60 * 24 * 30,
     });
 
     return response;
   } catch {
     return NextResponse.redirect(
-      new URL("/?tab=youtube&yt_error=oauth_exception", req.url)
+      new URL(`${errorBase}yt_error=oauth_exception`, req.url)
     );
   }
 }

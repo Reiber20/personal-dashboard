@@ -2,12 +2,15 @@ import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import {
   fetchSubscriptionsFeed,
+  fetchUserProfile,
   fetchUserSubscriptions,
   getOAuthCredentials,
-  ONE_YEAR_SECONDS,
+  getSessionCookieOptions,
+  normalizeSession,
   parseCookieJson,
   refreshAccessToken,
   resolveYouTubeChannel,
+  serializeCookieJson,
   StoredOAuthConfig,
   StoredYouTubeSession,
   YT_OAUTH_CFG_COOKIE,
@@ -34,53 +37,55 @@ function mergeChannels(
 }
 
 async function resolveActiveSession(
-  session: StoredYouTubeSession | null,
-  creds: StoredOAuthConfig | null,
-  forceSync: boolean
+  rawSession: StoredYouTubeSession | null,
+  creds: StoredOAuthConfig | null
 ): Promise<{
   authenticated: boolean;
   updatedSession: StoredYouTubeSession | null;
   sessionChanged: boolean;
 }> {
-  if (!session) {
+  const normalized = normalizeSession(rawSession);
+  if (!normalized) {
     return { authenticated: false, updatedSession: null, sessionChanged: false };
   }
 
-  let current = { ...session };
+  let current = { ...normalized };
   let sessionChanged = false;
 
-  // Silently refresh access token if expired (or near expiry) whenever refreshToken exists
-  if (Date.now() > current.expiresAt - 60_000 && current.refreshToken && creds) {
+  // Silently refresh access_token if expired (or near expiry) whenever refresh_token exists
+  if (
+    Date.now() > current.expiry_date - 60_000 &&
+    current.refresh_token &&
+    creds
+  ) {
     const refreshed = await refreshAccessToken(
-      current.refreshToken,
+      current.refresh_token,
       creds.clientId,
       creds.clientSecret
     );
     if (refreshed) {
       current = {
         ...current,
-        accessToken: refreshed.accessToken,
-        expiresAt: refreshed.expiresAt,
+        access_token: refreshed.accessToken,
+        expiry_date: refreshed.expiresAt,
       };
       sessionChanged = true;
     }
   }
 
-  // Keep session valid whenever we have a refreshToken or unexpired accessToken
   const hasValidToken =
-    Boolean(current.refreshToken) || Date.now() < current.expiresAt;
+    Boolean(current.refresh_token) ||
+    (Boolean(current.access_token) && Date.now() < current.expiry_date);
 
   if (!hasValidToken) {
     return { authenticated: false, updatedSession: null, sessionChanged: false };
   }
 
-  if (forceSync || !current.syncedChannels || current.syncedChannels.length === 0) {
-    if (current.accessToken) {
-      const subs = await fetchUserSubscriptions(current.accessToken);
-      if (subs.length > 0) {
-        current.syncedChannels = subs;
-        sessionChanged = true;
-      }
+  if (!current.user && current.access_token) {
+    const profile = await fetchUserProfile(current.access_token);
+    if (profile) {
+      current = { ...current, user: profile };
+      sessionChanged = true;
     }
   }
 
@@ -91,10 +96,7 @@ async function resolveActiveSession(
   };
 }
 
-export async function GET(req: NextRequest) {
-  const url = new URL(req.url);
-  const forceSync = url.searchParams.get("sync") === "1";
-
+export async function GET() {
   const cookieStore = await cookies();
   const cfgCookie = parseCookieJson<StoredOAuthConfig>(
     cookieStore.get(YT_OAUTH_CFG_COOKIE)?.value
@@ -105,9 +107,12 @@ export async function GET(req: NextRequest) {
   const creds = getOAuthCredentials(cfgCookie);
 
   const { authenticated, updatedSession, sessionChanged } =
-    await resolveActiveSession(sessionCookie, creds, forceSync);
+    await resolveActiveSession(sessionCookie, creds);
 
-  const channels = updatedSession?.syncedChannels || [];
+  const channels =
+    authenticated && updatedSession?.access_token
+      ? await fetchUserSubscriptions(updatedSession.access_token)
+      : [];
   const videos = await fetchSubscriptionsFeed(channels);
 
   const res = NextResponse.json(
@@ -122,13 +127,11 @@ export async function GET(req: NextRequest) {
   );
 
   if (sessionChanged && updatedSession) {
-    res.cookies.set(YT_SESSION_COOKIE, JSON.stringify(updatedSession), {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      path: "/",
-      maxAge: ONE_YEAR_SECONDS,
-    });
+    res.cookies.set(
+      YT_SESSION_COOKIE,
+      serializeCookieJson(updatedSession),
+      getSessionCookieOptions()
+    );
   }
 
   return res;
@@ -162,9 +165,7 @@ export async function POST(req: NextRequest) {
     if (action === "logout") {
       const res = NextResponse.json({ ok: true, authenticated: false });
       res.cookies.set(YT_SESSION_COOKIE, "", {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/",
+        ...getSessionCookieOptions(),
         maxAge: 0,
       });
       return res;
@@ -182,14 +183,8 @@ export async function POST(req: NextRequest) {
       const res = NextResponse.json({ ok: true, hasOAuthConfig: true });
       res.cookies.set(
         YT_OAUTH_CFG_COOKIE,
-        JSON.stringify({ clientId, clientSecret }),
-        {
-          httpOnly: true,
-          sameSite: "lax",
-          secure: process.env.NODE_ENV === "production",
-          path: "/",
-          maxAge: ONE_YEAR_SECONDS,
-        }
+        serializeCookieJson({ clientId, clientSecret }),
+        getSessionCookieOptions()
       );
       return res;
     }
@@ -214,10 +209,17 @@ export async function POST(req: NextRequest) {
 
     // Default: status_or_feed
     const { authenticated, updatedSession, sessionChanged } =
-      await resolveActiveSession(sessionCookie, creds, Boolean(body.forceSync));
+      await resolveActiveSession(sessionCookie, creds);
 
     const localChannels = Array.isArray(body.channels) ? body.channels : [];
-    const syncedChannels = updatedSession?.syncedChannels || [];
+    const shouldFetchSubs =
+      authenticated &&
+      Boolean(updatedSession?.access_token) &&
+      (Boolean(body.forceSync) || localChannels.length === 0);
+
+    const syncedChannels = shouldFetchSubs
+      ? await fetchUserSubscriptions(updatedSession!.access_token)
+      : [];
     const mergedChannels = mergeChannels(syncedChannels, localChannels);
 
     const videos = await fetchSubscriptionsFeed(mergedChannels);
@@ -234,13 +236,11 @@ export async function POST(req: NextRequest) {
     );
 
     if (sessionChanged && updatedSession) {
-      res.cookies.set(YT_SESSION_COOKIE, JSON.stringify(updatedSession), {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
-        path: "/",
-        maxAge: ONE_YEAR_SECONDS,
-      });
+      res.cookies.set(
+        YT_SESSION_COOKIE,
+        serializeCookieJson(updatedSession),
+        getSessionCookieOptions()
+      );
     }
 
     return res;

@@ -6,11 +6,14 @@ export const YT_OAUTH_CFG_COOKIE = "hr_yt_oauth_cfg";
 export const ONE_YEAR_SECONDS = 60 * 60 * 24 * 365;
 
 export interface StoredYouTubeSession {
-  refreshToken: string;
-  accessToken: string;
-  expiresAt: number;
+  access_token: string;
+  refresh_token: string;
+  expiry_date: number;
   user?: YouTubeUserProfile;
-  syncedChannels?: YouTubeChannel[];
+  // Optional legacy aliases for backward compatibility
+  accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: number;
 }
 
 export interface StoredOAuthConfig {
@@ -63,13 +66,63 @@ export function getOAuthCredentials(
   return null;
 }
 
+export function getSessionCookieOptions() {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge: ONE_YEAR_SECONDS,
+  };
+}
+
+export function serializeCookieJson(value: unknown): string {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
 export function parseCookieJson<T>(rawValue: string | undefined): T | null {
   if (!rawValue) return null;
+  const trimmed = rawValue.trim();
+  const candidates = [trimmed];
+
   try {
-    return JSON.parse(rawValue) as T;
-  } catch {
-    return null;
+    candidates.push(decodeURIComponent(trimmed));
+  } catch {}
+
+  try {
+    candidates.push(Buffer.from(trimmed, "base64url").toString("utf8"));
+  } catch {}
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      return JSON.parse(candidate) as T;
+    } catch {
+      // Try next decoding strategy
+    }
   }
+  return null;
+}
+
+export function normalizeSession(
+  raw: StoredYouTubeSession | null
+): StoredYouTubeSession | null {
+  if (!raw || typeof raw !== "object") return null;
+  const access_token = raw.access_token || raw.accessToken || "";
+  const refresh_token = raw.refresh_token || raw.refreshToken || "";
+  const expiry_date =
+    typeof raw.expiry_date === "number"
+      ? raw.expiry_date
+      : typeof raw.expiresAt === "number"
+        ? raw.expiresAt
+        : 0;
+  if (!access_token && !refresh_token) return null;
+  return {
+    access_token,
+    refresh_token,
+    expiry_date,
+    ...(raw.user ? { user: raw.user } : {}),
+  };
 }
 
 export async function refreshAccessToken(
@@ -393,5 +446,5 @@ export async function fetchSubscriptionsFeed(
     unique.push(video);
   }
 
-  return unique.slice(0, 60);
+  return unique.slice(0, 200);
 }
