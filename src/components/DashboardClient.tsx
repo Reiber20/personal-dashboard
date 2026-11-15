@@ -1003,11 +1003,11 @@ export function DashboardClient() {
             <WeatherClockWidgets key={`weather-${widgetRevs.weather}`} />
             <TrendStrip trends={trends} loading={loadingTrends} />
 
-            <div className="mb-5 grid grid-cols-1 gap-5 lg:grid-cols-12">
-              <div className="lg:col-span-7">
+            <div className="mb-5 grid grid-cols-1 items-start gap-5 lg:grid-cols-12">
+              <div className="h-auto overflow-visible lg:col-span-7">
                 <WeeklyCalendarWidget key={`cal-${widgetRevs.calendar}`} />
               </div>
-              <div className="lg:col-span-5">
+              <div className="h-auto overflow-visible lg:col-span-5">
                 <PersonalProjectsWidget key={`proj-${widgetRevs.projects}`} />
               </div>
             </div>
