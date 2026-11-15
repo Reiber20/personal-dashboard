@@ -15,7 +15,7 @@ import {
   ProjectStatus,
 } from "@/types/news";
 
-const PROJECTS_STORAGE_KEY = "hola_rober_projects_v1";
+export const PROJECTS_STORAGE_KEY = "hola_rober_projects_v1";
 
 const STATUS_META: Record<
   ProjectStatus,
@@ -62,7 +62,7 @@ const PRIORITY_STYLES: Record<ProjectPriority, { label: string; cls: string }> =
   },
 };
 
-const STARTER_PROJECTS: PersonalProject[] = [
+export const STARTER_PROJECTS: PersonalProject[] = [
   {
     id: "proj-starter-1",
     title: "Dashboard personal Hola Rober",
@@ -92,8 +92,19 @@ const STARTER_PROJECTS: PersonalProject[] = [
   },
 ];
 
-export function PersonalProjectsWidget() {
-  const [projects, setProjects] = useState<PersonalProject[]>([]);
+interface PersonalProjectsWidgetProps {
+  projects?: PersonalProject[];
+  onProjectsChange?: (next: PersonalProject[]) => void;
+}
+
+export function PersonalProjectsWidget({
+  projects: controlledProjects,
+  onProjectsChange,
+}: PersonalProjectsWidgetProps = {}) {
+  const [internalProjects, setInternalProjects] = useState<PersonalProject[]>([]);
+  const isControlled = controlledProjects !== undefined;
+  const projects = controlledProjects ?? internalProjects;
+
   const [filter, setFilter] = useState<"all" | ProjectStatus>("all");
   const [showAddForm, setShowAddForm] = useState(false);
 
@@ -109,19 +120,21 @@ export function PersonalProjectsWidget() {
   const [editDesc, setEditDesc] = useState("");
 
   useEffect(() => {
+    if (isControlled) return;
+
     const loadFromStorage = () => {
       try {
         const raw = localStorage.getItem(PROJECTS_STORAGE_KEY);
         if (raw !== null) {
           const parsed = JSON.parse(raw) as PersonalProject[];
           if (Array.isArray(parsed)) {
-            setProjects(parsed);
+            setInternalProjects(parsed);
             return;
           }
         }
-        setProjects(STARTER_PROJECTS);
+        setInternalProjects(STARTER_PROJECTS);
       } catch {
-        setProjects(STARTER_PROJECTS);
+        setInternalProjects(STARTER_PROJECTS);
       }
     };
 
@@ -142,10 +155,15 @@ export function PersonalProjectsWidget() {
       window.removeEventListener("hr-cloud-sync-applied", handleCloudApplied);
       window.removeEventListener("storage", handleStorage);
     };
-  }, []);
+  }, [isControlled]);
 
   const persist = (next: PersonalProject[]) => {
-    setProjects(next);
+    if (onProjectsChange) {
+      onProjectsChange(next);
+      return;
+    }
+
+    setInternalProjects(next);
     try {
       localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(next));
       window.dispatchEvent(

@@ -17,14 +17,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CompactHeadlinesWidget } from "@/components/CompactHeadlinesWidget";
 import { InstallAppButton } from "@/components/InstallBanner";
 import { NewsCard } from "@/components/NewsCard";
-import { PersonalProjectsWidget } from "@/components/PersonalProjectsWidget";
+import {
+  PersonalProjectsWidget,
+  STARTER_PROJECTS,
+} from "@/components/PersonalProjectsWidget";
 import { SettingsModal } from "@/components/SettingsModal";
 import { TrendStrip } from "@/components/TrendStrip";
 import { WeatherClockWidgets } from "@/components/WeatherClockWidgets";
 import { WeeklyCalendarWidget } from "@/components/WeeklyCalendarWidget";
 import { YouTubeSection } from "@/components/YouTubeSection";
 import { CATEGORIES } from "@/config/sources";
-import { CategoryId, NewsItem, NewsSource, TrendTopic } from "@/types/news";
+import {
+  CategoryId,
+  NewsItem,
+  NewsSource,
+  PersonalProject,
+  TrendTopic,
+} from "@/types/news";
 
 type ActiveTab = CategoryId | "guardados";
 type CloudSyncStatus = "idle" | "syncing" | "saving" | "synced" | "error";
@@ -50,7 +59,7 @@ interface CloudSyncPayload {
   icsUrls?: string[];
   calendarEvents?: unknown[];
   youtubeChannels?: unknown[];
-  projects?: unknown[];
+  projects?: PersonalProject[];
   weatherLocation?: unknown;
   savedItems?: NewsItem[];
   disabledSourceIds?: string[];
@@ -120,8 +129,13 @@ function pickCloudField(
   return undefined;
 }
 
-function collectLocalSyncPayload(): CloudSyncPayload {
+function collectLocalSyncPayload(options?: {
+  baseData?: Record<string, unknown> | null;
+  projectsOverride?: PersonalProject[];
+  includeProjects?: boolean;
+}): CloudSyncPayload {
   const payload: CloudSyncPayload = {
+    ...(options?.baseData ?? {}),
     version: 1,
     updatedAt: new Date().toISOString(),
   };
@@ -139,8 +153,18 @@ function collectLocalSyncPayload(): CloudSyncPayload {
   );
   if (Array.isArray(youtubeChannels)) payload.youtubeChannels = youtubeChannels;
 
-  const projects = readJsonFromStorage<unknown[]>(STORAGE_KEYS.projects);
-  if (Array.isArray(projects)) payload.projects = projects;
+  if (options?.projectsOverride !== undefined) {
+    payload.projects = options.projectsOverride;
+  } else {
+    const projects = readJsonFromStorage<PersonalProject[]>(
+      STORAGE_KEYS.projects
+    );
+    if (Array.isArray(projects)) {
+      if (projects.length > 0 || options?.includeProjects) {
+        payload.projects = projects;
+      }
+    }
+  }
 
   const weatherLocation = readJsonFromStorage<unknown>(
     STORAGE_KEYS.weatherLocation
@@ -201,7 +225,7 @@ function hasMeaningfulLocalData(payload: CloudSyncPayload): boolean {
     return true;
   }
   if (payload.theme === "dark" || payload.theme === "light") return true;
-  if (Array.isArray(payload.projects)) return true;
+  if (Array.isArray(payload.projects) && payload.projects.length > 0) return true;
   return false;
 }
 
@@ -219,6 +243,7 @@ export function DashboardClient() {
   const [savedItems, setSavedItems] = useState<NewsItem[]>([]);
   const [disabledSourceIds, setDisabledSourceIds] = useState<string[]>([]);
   const [customSources, setCustomSources] = useState<NewsSource[]>([]);
+  const [projects, setProjects] = useState<PersonalProject[]>([]);
   const [hydrated, setHydrated] = useState(false);
 
   const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>("idle");
@@ -238,6 +263,10 @@ export function DashboardClient() {
   const syncInFlightRef = useRef(false);
   const syncDebounceTimerRef = useRef<number | null>(null);
   const lastPullTimestampRef = useRef(0);
+  const projectsRef = useRef<PersonalProject[]>([]);
+  const hasPersistedProjectsRef = useRef(false);
+  const lastCloudDataRef = useRef<Record<string, unknown> | null>(null);
+  const pendingPushAfterInitialSyncRef = useRef(false);
 
   // Hydrate persisted preferences & theme
   useEffect(() => {
@@ -253,6 +282,24 @@ export function DashboardClient() {
       const customRaw = localStorage.getItem(STORAGE_KEYS.custom);
       if (customRaw) setCustomSources(JSON.parse(customRaw));
 
+      const projectsRaw = localStorage.getItem(STORAGE_KEYS.projects);
+      if (projectsRaw !== null) {
+        const parsedProjects = JSON.parse(projectsRaw) as PersonalProject[];
+        if (Array.isArray(parsedProjects)) {
+          setProjects(parsedProjects);
+          projectsRef.current = parsedProjects;
+          if (parsedProjects.length > 0) {
+            hasPersistedProjectsRef.current = true;
+          }
+        } else {
+          setProjects(STARTER_PROJECTS);
+          projectsRef.current = STARTER_PROJECTS;
+        }
+      } else {
+        setProjects(STARTER_PROJECTS);
+        projectsRef.current = STARTER_PROJECTS;
+      }
+
       const savedTheme = localStorage.getItem(STORAGE_KEYS.theme);
       const prefersDark =
         savedTheme !== null
@@ -266,14 +313,15 @@ export function DashboardClient() {
         setActiveTab("youtube");
       }
     } catch {
-      // Ignore storage errors
+      setProjects(STARTER_PROJECTS);
+      projectsRef.current = STARTER_PROJECTS;
     } finally {
       setHydrated(true);
     }
   }, []);
 
   const applyCloudSyncData = useCallback(
-    (cloudData: Record<string, unknown>) => {
+    (cloudData: Record<string, unknown>): { needsProjectsBackfill: boolean } => {
       if (syncDebounceTimerRef.current !== null) {
         window.clearTimeout(syncDebounceTimerRef.current);
         syncDebounceTimerRef.current = null;
@@ -283,6 +331,7 @@ export function DashboardClient() {
       let calendarChanged = false;
       let projectsChanged = false;
       let youtubeChanged = false;
+      let needsProjectsBackfill = false;
 
       const writeIfChanged = (key: string, serialized: string): boolean => {
         if (window.localStorage.getItem(key) === serialized) return false;
@@ -375,13 +424,36 @@ export function DashboardClient() {
           }
         }
 
-        const projectsVal = parseMaybeJson<unknown[]>(
+        const projectsVal = parseMaybeJson<PersonalProject[]>(
           pickCloudField(cloudData, "projects", STORAGE_KEYS.projects)
         );
-        if (Array.isArray(projectsVal)) {
+        const localProjectsRaw = readJsonFromStorage<PersonalProject[]>(
+          STORAGE_KEYS.projects
+        );
+
+        if (Array.isArray(projectsVal) && projectsVal.length > 0) {
+          projectsRef.current = projectsVal;
+          setProjects(projectsVal);
+          hasPersistedProjectsRef.current = true;
           if (
             writeIfChanged(STORAGE_KEYS.projects, JSON.stringify(projectsVal))
           ) {
+            projectsChanged = true;
+          }
+        } else if (
+          Array.isArray(localProjectsRaw) &&
+          localProjectsRaw.length > 0
+        ) {
+          // Old device already has projects in localStorage while Supabase field was empty or undefined
+          projectsRef.current = localProjectsRaw;
+          setProjects(localProjectsRaw);
+          hasPersistedProjectsRef.current = true;
+          needsProjectsBackfill = true;
+        } else if (Array.isArray(projectsVal) && projectsVal.length === 0) {
+          projectsRef.current = [];
+          setProjects([]);
+          hasPersistedProjectsRef.current = true;
+          if (writeIfChanged(STORAGE_KEYS.projects, JSON.stringify([]))) {
             projectsChanged = true;
           }
         }
@@ -431,14 +503,23 @@ export function DashboardClient() {
       }
 
       window.dispatchEvent(new CustomEvent("hr-cloud-sync-applied"));
+      return { needsProjectsBackfill };
     },
     []
   );
 
   const pushToCloudNow = useCallback(
     async (payloadOverride?: CloudSyncPayload, keepalive = false) => {
-      if (!isSyncAuthedRef.current) return;
-      const payload = payloadOverride ?? collectLocalSyncPayload();
+      if (!isSyncAuthedRef.current || !initialSyncDoneRef.current) return;
+      const payload =
+        payloadOverride ??
+        collectLocalSyncPayload({
+          baseData: lastCloudDataRef.current,
+          projectsOverride: hasPersistedProjectsRef.current
+            ? projectsRef.current
+            : undefined,
+          includeProjects: hasPersistedProjectsRef.current,
+        });
       if (!keepalive) setSyncStatus("saving");
       try {
         const res = await fetch("/api/sync", {
@@ -455,6 +536,7 @@ export function DashboardClient() {
           return;
         }
         if (res.ok) {
+          lastCloudDataRef.current = payload;
           setSyncStatus("synced");
         } else {
           setSyncStatus("error");
@@ -467,11 +549,14 @@ export function DashboardClient() {
   );
 
   const scheduleCloudPush = useCallback(() => {
-    if (
-      !isSyncAuthedRef.current ||
-      !initialSyncDoneRef.current ||
-      isApplyingCloudRef.current
-    ) {
+    if (isApplyingCloudRef.current) return;
+
+    if (!initialSyncDoneRef.current) {
+      pendingPushAfterInitialSyncRef.current = true;
+      return;
+    }
+
+    if (!isSyncAuthedRef.current) {
       return;
     }
 
@@ -485,6 +570,22 @@ export function DashboardClient() {
       void pushToCloudNow();
     }, CLOUD_SYNC_DEBOUNCE_MS);
   }, [pushToCloudNow]);
+
+  const handleProjectsChange = useCallback(
+    (nextProjects: PersonalProject[]) => {
+      projectsRef.current = nextProjects;
+      setProjects(nextProjects);
+      hasPersistedProjectsRef.current = true;
+      try {
+        window.localStorage.setItem(
+          STORAGE_KEYS.projects,
+          JSON.stringify(nextProjects)
+        );
+      } catch {}
+      scheduleCloudPush();
+    },
+    [scheduleCloudPush]
+  );
 
   const syncFromCloud = useCallback(
     async (force = false) => {
@@ -537,28 +638,42 @@ export function DashboardClient() {
 
         if (hasCloudData) {
           const cloudRecord = cloudData as Record<string, unknown>;
-          applyCloudSyncData(cloudRecord);
-          const hasCloudProjects =
-            Array.isArray(cloudRecord.projects) ||
-            Array.isArray(cloudRecord[STORAGE_KEYS.projects]);
-          const localProjects = readJsonFromStorage<unknown[]>(
-            STORAGE_KEYS.projects
-          );
-          if (!hasCloudProjects && Array.isArray(localProjects)) {
+          lastCloudDataRef.current = cloudRecord;
+          const { needsProjectsBackfill } = applyCloudSyncData(cloudRecord);
+          initialSyncDoneRef.current = true;
+
+          if (needsProjectsBackfill || pendingPushAfterInitialSyncRef.current) {
+            pendingPushAfterInitialSyncRef.current = false;
             await pushToCloudNow();
           } else {
             setSyncStatus("synced");
           }
         } else {
-          const localPayload = collectLocalSyncPayload();
-          if (hasMeaningfulLocalData(localPayload)) {
-            await pushToCloudNow(localPayload);
+          lastCloudDataRef.current = null;
+          const localProjects = readJsonFromStorage<PersonalProject[]>(
+            STORAGE_KEYS.projects
+          );
+          const hasLocalProjects =
+            Array.isArray(localProjects) && localProjects.length > 0;
+          if (hasLocalProjects) {
+            hasPersistedProjectsRef.current = true;
+          }
+
+          const localPayload = collectLocalSyncPayload({
+            projectsOverride: hasLocalProjects ? localProjects : undefined,
+            includeProjects: hasLocalProjects,
+          });
+          initialSyncDoneRef.current = true;
+
+          const hadPendingPush = pendingPushAfterInitialSyncRef.current;
+          pendingPushAfterInitialSyncRef.current = false;
+
+          if (hasMeaningfulLocalData(localPayload) || hadPendingPush) {
+            await pushToCloudNow(hadPendingPush ? undefined : localPayload);
           } else {
             setSyncStatus("synced");
           }
         }
-
-        initialSyncDoneRef.current = true;
       } catch {
         if (isSyncAuthedRef.current) {
           setSyncStatus("error");
@@ -1030,7 +1145,11 @@ export function DashboardClient() {
                 <WeeklyCalendarWidget key={`cal-${widgetRevs.calendar}`} />
               </div>
               <div className="h-auto overflow-visible lg:col-span-5">
-                <PersonalProjectsWidget key={`proj-${widgetRevs.projects}`} />
+                <PersonalProjectsWidget
+                  key={`proj-${widgetRevs.projects}`}
+                  projects={projects}
+                  onProjectsChange={handleProjectsChange}
+                />
               </div>
             </div>
 
