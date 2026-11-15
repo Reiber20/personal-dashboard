@@ -638,7 +638,7 @@ export function WeeklyCalendarWidget() {
           return (
             <div
               key={ymd}
-              className={`flex min-h-[120px] flex-col rounded-xl border p-2 transition md:h-auto md:max-h-none md:overflow-visible ${
+              className={`flex min-h-[120px] min-w-0 flex-col rounded-xl border p-2 transition md:h-auto md:max-h-none md:overflow-visible ${
                 isToday
                   ? "border-indigo-300 bg-indigo-50/45 dark:border-sky-500/50 dark:bg-sky-500/10"
                   : "border-slate-200/80 bg-slate-50/60 dark:border-slate-700/60 dark:bg-slate-900/45"
