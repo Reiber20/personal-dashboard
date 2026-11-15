@@ -342,7 +342,7 @@ export function WeeklyCalendarWidget() {
   const needsCalendarReauth = authenticated && !calendarScopeGranted;
 
   return (
-    <section className="flex h-full flex-col rounded-2xl border border-slate-200/90 bg-white p-4 shadow-xs dark:border-slate-700/70 dark:bg-slate-800/85">
+    <section className="flex h-auto flex-col rounded-2xl border border-slate-200/90 bg-white p-4 shadow-xs md:h-auto md:max-h-none md:overflow-visible dark:border-slate-700/70 dark:bg-slate-800/85">
       {/* Header */}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2.5">
@@ -625,7 +625,7 @@ export function WeeklyCalendarWidget() {
       )}
 
       {/* 7-Day Weekly Grid */}
-      <div className="grid flex-1 grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-4 xl:grid-cols-7">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 md:h-auto md:max-h-none md:grid-cols-4 md:overflow-visible xl:grid-cols-7">
         {weekDays.map((day) => {
           const ymd = formatLocalYmd(day);
           const isToday = ymd === todayYmd;
@@ -638,7 +638,7 @@ export function WeeklyCalendarWidget() {
           return (
             <div
               key={ymd}
-              className={`flex min-h-[120px] flex-col rounded-xl border p-2 transition ${
+              className={`flex min-h-[120px] flex-col rounded-xl border p-2 transition md:h-auto md:max-h-none md:overflow-visible ${
                 isToday
                   ? "border-indigo-300 bg-indigo-50/45 dark:border-sky-500/50 dark:bg-sky-500/10"
                   : "border-slate-200/80 bg-slate-50/60 dark:border-slate-700/60 dark:bg-slate-900/45"
@@ -673,7 +673,7 @@ export function WeeklyCalendarWidget() {
                 </button>
               </div>
 
-              <div className="space-y-1.5 overflow-y-auto">
+              <div className="space-y-1.5 md:h-auto md:max-h-none md:overflow-visible">
                 {dayEvents.length === 0 ? (
                   <p className="py-3 text-center text-[10px] text-slate-400 dark:text-slate-500">
                     Sin eventos
@@ -699,13 +699,15 @@ export function WeeklyCalendarWidget() {
                                 href={ev.htmlLink}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="inline-flex items-center gap-0.5 font-semibold leading-tight hover:underline"
+                                className="block font-semibold whitespace-normal break-words leading-snug hover:underline"
                               >
-                                <span className="line-clamp-2">{ev.title}</span>
-                                <ExternalLink className="h-2.5 w-2.5 shrink-0 opacity-70" />
+                                <span className="whitespace-normal break-words">
+                                  {ev.title}
+                                </span>
+                                <ExternalLink className="ml-1 inline-block h-2.5 w-2.5 shrink-0 align-baseline opacity-70" />
                               </a>
                             ) : (
-                              <p className="line-clamp-2 font-semibold leading-tight">
+                              <p className="font-semibold whitespace-normal break-words leading-snug">
                                 {ev.title}
                               </p>
                             )}
