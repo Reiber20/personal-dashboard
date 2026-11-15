@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Hola Rober — Noticias, Clima y Tendencias",
+  title: "Hola Rober",
   description:
     "Tu dashboard personal de noticias, clima y trending topics diarios.",
   applicationName: "Hola Rober",
