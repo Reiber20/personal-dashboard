@@ -15,6 +15,11 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CompactHeadlinesWidget } from "@/components/CompactHeadlinesWidget";
+import {
+  DAILY_TASKS_STORAGE_KEY,
+  DailyTasksWidget,
+  evaluateDailyTasksReset,
+} from "@/components/DailyTasksWidget";
 import { InstallAppButton } from "@/components/InstallBanner";
 import { NewsCard } from "@/components/NewsCard";
 import {
@@ -29,6 +34,7 @@ import { YouTubeSection } from "@/components/YouTubeSection";
 import { CATEGORIES } from "@/config/sources";
 import {
   CategoryId,
+  DailyTaskItem,
   NewsItem,
   NewsSource,
   PersonalProject,
@@ -46,12 +52,70 @@ const STORAGE_KEYS = {
   icsUrls: "hola_rober_gcal_ics_v1",
   calendarEvents: "hola_rober_calendar_events_v1",
   youtubeChannels: "hola_rober_yt_channels_v1",
+  dailyTasks: DAILY_TASKS_STORAGE_KEY,
   projects: "hola_rober_projects_v1",
   weatherLocation: "hola_rober_weather_loc_v1",
 } as const;
 
 const SYNCED_STORAGE_KEYS = new Set<string>(Object.values(STORAGE_KEYS));
 const CLOUD_SYNC_DEBOUNCE_MS = 800;
+const ACTIVE_TAB_SESSION_KEY = "hola_rober_active_tab_v1";
+const VALID_TABS: ReadonlySet<ActiveTab> = new Set<ActiveTab>([
+  ...CATEGORIES.map((c) => c.id),
+  "guardados",
+]);
+
+function normalizeTabCandidate(
+  raw: string | null | undefined
+): ActiveTab | null {
+  if (!raw) return null;
+  const normalized = raw.trim().toLowerCase();
+  const mapped = normalized === "noticias" ? "ia" : normalized;
+  return VALID_TABS.has(mapped as ActiveTab) ? (mapped as ActiveTab) : null;
+}
+
+function resolvePersistedTab(): ActiveTab | null {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const queryTab = normalizeTabCandidate(params.get("tab"));
+    if (queryTab) return queryTab;
+  } catch {}
+
+  try {
+    const rawHash = window.location.hash.replace(/^#/, "");
+    const hashTab = normalizeTabCandidate(rawHash);
+    if (hashTab) return hashTab;
+  } catch {}
+
+  try {
+    const sessionTab = normalizeTabCandidate(
+      window.sessionStorage.getItem(ACTIVE_TAB_SESSION_KEY)
+    );
+    if (sessionTab) return sessionTab;
+  } catch {}
+
+  return null;
+}
+
+function syncTabToLocation(tab: ActiveTab) {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(ACTIVE_TAB_SESSION_KEY, tab);
+  } catch {}
+  try {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("tab") !== tab) {
+      url.searchParams.set("tab", tab);
+      window.history.replaceState(
+        {},
+        "",
+        url.pathname + url.search + url.hash
+      );
+    }
+  } catch {}
+}
 
 interface CloudSyncPayload {
   version?: number;
@@ -59,6 +123,7 @@ interface CloudSyncPayload {
   icsUrls?: string[];
   calendarEvents?: unknown[];
   youtubeChannels?: unknown[];
+  dailyTasks?: DailyTaskItem[];
   projects?: PersonalProject[];
   weatherLocation?: unknown;
   savedItems?: NewsItem[];
@@ -133,6 +198,8 @@ function collectLocalSyncPayload(options?: {
   baseData?: Record<string, unknown> | null;
   projectsOverride?: PersonalProject[];
   includeProjects?: boolean;
+  dailyTasksOverride?: DailyTaskItem[];
+  includeDailyTasks?: boolean;
 }): CloudSyncPayload {
   const payload: CloudSyncPayload = {
     ...(options?.baseData ?? {}),
@@ -152,6 +219,19 @@ function collectLocalSyncPayload(options?: {
     STORAGE_KEYS.youtubeChannels
   );
   if (Array.isArray(youtubeChannels)) payload.youtubeChannels = youtubeChannels;
+
+  if (options?.dailyTasksOverride !== undefined) {
+    payload.dailyTasks = options.dailyTasksOverride;
+  } else {
+    const dailyTasks = readJsonFromStorage<DailyTaskItem[]>(
+      STORAGE_KEYS.dailyTasks
+    );
+    if (Array.isArray(dailyTasks)) {
+      if (dailyTasks.length > 0 || options?.includeDailyTasks) {
+        payload.dailyTasks = dailyTasks;
+      }
+    }
+  }
 
   if (options?.projectsOverride !== undefined) {
     payload.projects = options.projectsOverride;
@@ -225,6 +305,9 @@ function hasMeaningfulLocalData(payload: CloudSyncPayload): boolean {
     return true;
   }
   if (payload.theme === "dark" || payload.theme === "light") return true;
+  if (Array.isArray(payload.dailyTasks) && payload.dailyTasks.length > 0) {
+    return true;
+  }
   if (Array.isArray(payload.projects) && payload.projects.length > 0) return true;
   return false;
 }
@@ -243,6 +326,7 @@ export function DashboardClient() {
   const [savedItems, setSavedItems] = useState<NewsItem[]>([]);
   const [disabledSourceIds, setDisabledSourceIds] = useState<string[]>([]);
   const [customSources, setCustomSources] = useState<NewsSource[]>([]);
+  const [dailyTasks, setDailyTasks] = useState<DailyTaskItem[]>([]);
   const [projects, setProjects] = useState<PersonalProject[]>([]);
   const [hydrated, setHydrated] = useState(false);
 
@@ -251,18 +335,22 @@ export function DashboardClient() {
   const [widgetRevs, setWidgetRevs] = useState({
     weather: 0,
     calendar: 0,
+    dailyTasks: 0,
     projects: 0,
     youtube: 0,
   });
 
   const newsAbortRef = useRef<AbortController | null>(null);
   const requestSeqRef = useRef(0);
+  const activeTabRef = useRef<ActiveTab>("hoy");
   const isSyncAuthedRef = useRef(false);
   const initialSyncDoneRef = useRef(false);
   const isApplyingCloudRef = useRef(false);
   const syncInFlightRef = useRef(false);
   const syncDebounceTimerRef = useRef<number | null>(null);
   const lastPullTimestampRef = useRef(0);
+  const dailyTasksRef = useRef<DailyTaskItem[]>([]);
+  const hasPersistedDailyTasksRef = useRef(false);
   const projectsRef = useRef<PersonalProject[]>([]);
   const hasPersistedProjectsRef = useRef(false);
   const lastCloudDataRef = useRef<Record<string, unknown> | null>(null);
@@ -281,6 +369,28 @@ export function DashboardClient() {
 
       const customRaw = localStorage.getItem(STORAGE_KEYS.custom);
       if (customRaw) setCustomSources(JSON.parse(customRaw));
+
+      const dailyRaw = localStorage.getItem(STORAGE_KEYS.dailyTasks);
+      if (dailyRaw !== null) {
+        const parsedDaily = JSON.parse(dailyRaw) as DailyTaskItem[];
+        if (Array.isArray(parsedDaily)) {
+          const { nextTasks, changed } = evaluateDailyTasksReset(
+            parsedDaily,
+            new Date()
+          );
+          setDailyTasks(nextTasks);
+          dailyTasksRef.current = nextTasks;
+          if (nextTasks.length > 0) {
+            hasPersistedDailyTasksRef.current = true;
+          }
+          if (changed) {
+            localStorage.setItem(
+              STORAGE_KEYS.dailyTasks,
+              JSON.stringify(nextTasks)
+            );
+          }
+        }
+      }
 
       const projectsRaw = localStorage.getItem(STORAGE_KEYS.projects);
       if (projectsRaw !== null) {
@@ -307,21 +417,31 @@ export function DashboardClient() {
           : window.matchMedia("(prefers-color-scheme: dark)").matches;
       setDarkMode(prefersDark);
       document.documentElement.classList.toggle("dark", prefersDark);
-
-      const params = new URLSearchParams(window.location.search);
-      if (params.get("tab") === "youtube") {
-        setActiveTab("youtube");
-      }
     } catch {
       setProjects(STARTER_PROJECTS);
       projectsRef.current = STARTER_PROJECTS;
     } finally {
+      const restoredTab = resolvePersistedTab();
+      const initialTab = restoredTab ?? "hoy";
+      activeTabRef.current = initialTab;
+      if (restoredTab) {
+        setActiveTab(restoredTab);
+        if (restoredTab === "guardados" || restoredTab === "youtube") {
+          setLoadingNews(false);
+        }
+      }
+      syncTabToLocation(initialTab);
       setHydrated(true);
     }
   }, []);
 
   const applyCloudSyncData = useCallback(
-    (cloudData: Record<string, unknown>): { needsProjectsBackfill: boolean } => {
+    (
+      cloudData: Record<string, unknown>
+    ): {
+      needsProjectsBackfill: boolean;
+      needsDailyTasksBackfill: boolean;
+    } => {
       if (syncDebounceTimerRef.current !== null) {
         window.clearTimeout(syncDebounceTimerRef.current);
         syncDebounceTimerRef.current = null;
@@ -329,9 +449,11 @@ export function DashboardClient() {
 
       let weatherChanged = false;
       let calendarChanged = false;
+      let dailyTasksChanged = false;
       let projectsChanged = false;
       let youtubeChanged = false;
       let needsProjectsBackfill = false;
+      let needsDailyTasksBackfill = false;
 
       const writeIfChanged = (key: string, serialized: string): boolean => {
         if (window.localStorage.getItem(key) === serialized) return false;
@@ -424,6 +546,59 @@ export function DashboardClient() {
           }
         }
 
+        const dailyVal = parseMaybeJson<DailyTaskItem[]>(
+          pickCloudField(cloudData, "dailyTasks", STORAGE_KEYS.dailyTasks)
+        );
+        const localDailyRaw = readJsonFromStorage<DailyTaskItem[]>(
+          STORAGE_KEYS.dailyTasks
+        );
+
+        if (Array.isArray(dailyVal) && dailyVal.length > 0) {
+          const { nextTasks: evaluatedDaily, changed: dailyResetChanged } =
+            evaluateDailyTasksReset(dailyVal, new Date());
+          dailyTasksRef.current = evaluatedDaily;
+          setDailyTasks(evaluatedDaily);
+          hasPersistedDailyTasksRef.current = true;
+          if (
+            writeIfChanged(
+              STORAGE_KEYS.dailyTasks,
+              JSON.stringify(evaluatedDaily)
+            )
+          ) {
+            dailyTasksChanged = true;
+          }
+          if (dailyResetChanged) {
+            needsDailyTasksBackfill = true;
+          }
+        } else if (
+          Array.isArray(localDailyRaw) &&
+          localDailyRaw.length > 0
+        ) {
+          const { nextTasks: evaluatedLocal } = evaluateDailyTasksReset(
+            localDailyRaw,
+            new Date()
+          );
+          dailyTasksRef.current = evaluatedLocal;
+          setDailyTasks(evaluatedLocal);
+          hasPersistedDailyTasksRef.current = true;
+          if (
+            writeIfChanged(
+              STORAGE_KEYS.dailyTasks,
+              JSON.stringify(evaluatedLocal)
+            )
+          ) {
+            dailyTasksChanged = true;
+          }
+          needsDailyTasksBackfill = true;
+        } else if (Array.isArray(dailyVal) && dailyVal.length === 0) {
+          dailyTasksRef.current = [];
+          setDailyTasks([]);
+          hasPersistedDailyTasksRef.current = true;
+          if (writeIfChanged(STORAGE_KEYS.dailyTasks, JSON.stringify([]))) {
+            dailyTasksChanged = true;
+          }
+        }
+
         const projectsVal = parseMaybeJson<PersonalProject[]>(
           pickCloudField(cloudData, "projects", STORAGE_KEYS.projects)
         );
@@ -491,19 +666,21 @@ export function DashboardClient() {
       if (
         weatherChanged ||
         calendarChanged ||
+        dailyTasksChanged ||
         projectsChanged ||
         youtubeChanged
       ) {
         setWidgetRevs((prev) => ({
           weather: prev.weather + (weatherChanged ? 1 : 0),
           calendar: prev.calendar + (calendarChanged ? 1 : 0),
+          dailyTasks: prev.dailyTasks + (dailyTasksChanged ? 1 : 0),
           projects: prev.projects + (projectsChanged ? 1 : 0),
           youtube: prev.youtube + (youtubeChanged ? 1 : 0),
         }));
       }
 
       window.dispatchEvent(new CustomEvent("hr-cloud-sync-applied"));
-      return { needsProjectsBackfill };
+      return { needsProjectsBackfill, needsDailyTasksBackfill };
     },
     []
   );
@@ -519,6 +696,10 @@ export function DashboardClient() {
             ? projectsRef.current
             : undefined,
           includeProjects: hasPersistedProjectsRef.current,
+          dailyTasksOverride: hasPersistedDailyTasksRef.current
+            ? dailyTasksRef.current
+            : undefined,
+          includeDailyTasks: hasPersistedDailyTasksRef.current,
         });
       if (!keepalive) setSyncStatus("saving");
       try {
@@ -570,6 +751,26 @@ export function DashboardClient() {
       void pushToCloudNow();
     }, CLOUD_SYNC_DEBOUNCE_MS);
   }, [pushToCloudNow]);
+
+  const handleDailyTasksChange = useCallback(
+    (nextTasks: DailyTaskItem[]) => {
+      dailyTasksRef.current = nextTasks;
+      setDailyTasks(nextTasks);
+      hasPersistedDailyTasksRef.current = true;
+      try {
+        window.localStorage.setItem(
+          STORAGE_KEYS.dailyTasks,
+          JSON.stringify(nextTasks)
+        );
+      } catch {}
+      if (initialSyncDoneRef.current) {
+        scheduleCloudPush();
+      } else {
+        pendingPushAfterInitialSyncRef.current = true;
+      }
+    },
+    [scheduleCloudPush]
+  );
 
   const handleProjectsChange = useCallback(
     (nextProjects: PersonalProject[]) => {
@@ -639,10 +840,15 @@ export function DashboardClient() {
         if (hasCloudData) {
           const cloudRecord = cloudData as Record<string, unknown>;
           lastCloudDataRef.current = cloudRecord;
-          const { needsProjectsBackfill } = applyCloudSyncData(cloudRecord);
+          const { needsProjectsBackfill, needsDailyTasksBackfill } =
+            applyCloudSyncData(cloudRecord);
           initialSyncDoneRef.current = true;
 
-          if (needsProjectsBackfill || pendingPushAfterInitialSyncRef.current) {
+          if (
+            needsProjectsBackfill ||
+            needsDailyTasksBackfill ||
+            pendingPushAfterInitialSyncRef.current
+          ) {
             pendingPushAfterInitialSyncRef.current = false;
             await pushToCloudNow();
           } else {
@@ -659,9 +865,34 @@ export function DashboardClient() {
             hasPersistedProjectsRef.current = true;
           }
 
+          const localDailyTasksRaw = readJsonFromStorage<DailyTaskItem[]>(
+            STORAGE_KEYS.dailyTasks
+          );
+          const hasLocalDailyTasks =
+            Array.isArray(localDailyTasksRaw) && localDailyTasksRaw.length > 0;
+          let localDailyTasks = localDailyTasksRaw;
+          if (hasLocalDailyTasks && localDailyTasksRaw) {
+            const { nextTasks: evaluatedDaily, changed: dailyChanged } =
+              evaluateDailyTasksReset(localDailyTasksRaw, new Date());
+            localDailyTasks = evaluatedDaily;
+            dailyTasksRef.current = evaluatedDaily;
+            setDailyTasks(evaluatedDaily);
+            hasPersistedDailyTasksRef.current = true;
+            if (dailyChanged) {
+              try {
+                window.localStorage.setItem(
+                  STORAGE_KEYS.dailyTasks,
+                  JSON.stringify(evaluatedDaily)
+                );
+              } catch {}
+            }
+          }
+
           const localPayload = collectLocalSyncPayload({
             projectsOverride: hasLocalProjects ? localProjects : undefined,
             includeProjects: hasLocalProjects,
+            dailyTasksOverride: hasLocalDailyTasks ? localDailyTasks : undefined,
+            includeDailyTasks: hasLocalDailyTasks,
           });
           initialSyncDoneRef.current = true;
 
@@ -684,6 +915,25 @@ export function DashboardClient() {
     },
     [applyCloudSyncData, pushToCloudNow]
   );
+
+  // Evaluate daily tasks resets every minute (even when user is on another tab)
+  useEffect(() => {
+    if (!hydrated) return;
+    const intervalId = window.setInterval(() => {
+      if (dailyTasksRef.current.length === 0) return;
+      const { nextTasks, changed } = evaluateDailyTasksReset(
+        dailyTasksRef.current,
+        new Date()
+      );
+      if (changed) {
+        handleDailyTasksChange(nextTasks);
+      }
+    }, 60_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [hydrated, handleDailyTasksChange]);
 
   // 1) Initial load & re-sync when returning to the tab/PWA
   useEffect(() => {
@@ -866,8 +1116,17 @@ export function DashboardClient() {
     [customSources, disabledSourceIds]
   );
 
-  const handleSelectTab = (tab: ActiveTab) => {
-    if (tab === activeTab) return;
+  const applyActiveTab = useCallback((tab: ActiveTab, updateUrl: boolean) => {
+    if (updateUrl) {
+      syncTabToLocation(tab);
+    } else {
+      try {
+        window.sessionStorage.setItem(ACTIVE_TAB_SESSION_KEY, tab);
+      } catch {}
+    }
+
+    if (tab === activeTabRef.current) return;
+    activeTabRef.current = tab;
     setActiveTab(tab);
     if (tab !== "guardados" && tab !== "youtube") {
       setLoadingNews(true);
@@ -876,6 +1135,23 @@ export function DashboardClient() {
       newsAbortRef.current?.abort();
       setLoadingNews(false);
     }
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const nextTab = resolvePersistedTab() ?? "hoy";
+      applyActiveTab(nextTab, true);
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [applyActiveTab]);
+
+  const handleSelectTab = (tab: ActiveTab) => {
+    syncTabToLocation(tab);
+    if (tab === activeTab) return;
+    applyActiveTab(tab, false);
   };
 
   useEffect(() => {
@@ -1144,7 +1420,12 @@ export function DashboardClient() {
               <div className="h-auto overflow-visible lg:col-span-7">
                 <WeeklyCalendarWidget key={`cal-${widgetRevs.calendar}`} />
               </div>
-              <div className="h-auto overflow-visible lg:col-span-5">
+              <div className="flex h-auto flex-col gap-5 overflow-visible lg:col-span-5">
+                <DailyTasksWidget
+                  key={`daily-${widgetRevs.dailyTasks}`}
+                  tasks={dailyTasks}
+                  onTasksChange={handleDailyTasksChange}
+                />
                 <PersonalProjectsWidget
                   key={`proj-${widgetRevs.projects}`}
                   projects={projects}

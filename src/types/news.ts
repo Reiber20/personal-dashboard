@@ -158,3 +158,15 @@ export interface PersonalProject {
   progress: number;
   updatedAt: string;
 }
+
+export type DailyTaskResetMode = "daily" | "scheduled" | "persistent";
+
+export interface DailyTaskItem {
+  id: string;
+  title: string;
+  completed: boolean;
+  completedAt?: string | null;
+  resetMode: DailyTaskResetMode;
+  resetTime?: string; // "HH:MM" (24h) cuando resetMode === "scheduled"
+  createdAt?: string;
+}
