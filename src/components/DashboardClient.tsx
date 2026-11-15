@@ -852,7 +852,7 @@ export function DashboardClient() {
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span className="inline-flex h-7 w-7 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-600 to-sky-500 text-xs font-black text-white shadow-sm">
-                HR
+                RM
               </span>
               <h1 className="truncate text-lg font-extrabold tracking-tight">
                 Hola Rober
